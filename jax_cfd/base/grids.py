@@ -168,6 +168,25 @@ class BoundaryConditions:
     raise NotImplementedError(
         'shift() not implemented in BoundaryConditions base class.')
 
+  def values(self, axis: int, grid: Optional[Grid],
+             offset: Optional[Tuple[float, ...]],
+             time: Optional[float]) -> Tuple[Optional[Array], Optional[Array]]:
+    """Returns Arrays specifying boundary values on the grid along axis.
+
+    Args:
+      axis: axis along which to return boundary values.
+      grid: a `Grid` object on which to evaluate boundary conditions.
+      offset: a Tuple of offsets that specifies (along with grid) where to
+        evaluate boundary conditions in space.
+      time: a float used as an input to boundary function.
+
+    Returns:
+      A tuple of arrays of grid.ndim - 1 dimensions that specify values on the
+      boundary.
+    """
+    raise NotImplementedError(
+        'values() not implemented in BoundaryConditions base class.')
+
 
 @register_pytree_node_class
 @dataclasses.dataclass
@@ -305,6 +324,44 @@ class GridVariable:
     interior_array = self._interior_array()
     interior_grid = self._interior_grid()
     return GridArray(interior_array, self.array.offset, interior_grid)
+
+  def impose_bc(self, *args) -> None:
+    """Enforces boundary condition.
+
+    To keep consistent sizes, in case of the nonperiodic boundary with edge
+    offset, self.array stores a row of dependent boundary values.
+    impose_bc changes "boundary row" values to match the prescribed bc.
+    This allows to treat array just as a collection of interior data and
+    bc as just the boundary data, independent of each other.
+    This only has effect on nonperiodic bc with edge offset.
+
+    Args:
+      *args: any optional values passed into BoundaryConditions values method.
+
+    Returns:
+      nothing, the GridVariable is changed in place.
+    """
+
+    def _set_value_on_boundary(arr_1d, value, side):
+      loc = side
+      if side == 1:
+        loc = -1
+      arr_1d = arr_1d.at[loc].set(value)
+      return arr_1d
+    if self.array.grid.shape != self.array.data.shape:
+      raise ValueError('Stored array and grid have mismatched sizes.')
+    for axis in range(self.grid.ndim):
+      values = self.bc.values(axis, *args)
+      for boundary_side in range(2):
+        if self.bc.types[axis][boundary_side] != 'periodic':
+          if np.isclose(self.array.offset[axis], float(boundary_side)):
+            # boundary data is set to match self.bc:
+            self.array = GridArray(
+                jnp.apply_along_axis(_set_value_on_boundary, axis,
+                                     self.array.data, values[boundary_side],
+                                     boundary_side), self.array.offset,
+                self.array.grid)
+      return
 
 
 GridVariableVector = Tuple[GridVariable, ...]
